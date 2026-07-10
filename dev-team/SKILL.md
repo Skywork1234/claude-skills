@@ -7,23 +7,25 @@ description: Run a request through a PM -> dev -> tester pipeline. You (the main
 
 There is no separate "PM" agent — plan mode IS the PM role, run by you (the main assistant), since it already does exactly this: take the request, produce a plan, get the user's explicit approval before anything is built. Do not spawn a "pm" subagent.
 
-`dev` and `tester` are real subagents (`~/.claude/agents/dev.md`, `~/.claude/agents/tester.md`), invoked via the Agent tool. Subagents cannot message each other directly — you are always the relay. The shared TaskList is the single source of truth both you and the subagents read/write; that's how dev "reports back to the checklist" without talking to a PM agent directly.
+`dev` and `tester` are real subagents (`~/.claude/agents/dev.md`, `~/.claude/agents/tester.md`), invoked via the Agent tool. Subagents cannot message each other directly — you are always the relay.
+
+**Important, confirmed by a live test run:** `dev` and `tester` do NOT have working access to `TaskList`/`TaskGet`/`TaskUpdate`/`TaskCreate` in their own sessions, even when those tools are listed in their agent frontmatter — those tools appear to be scoped to your (the orchestrator's) session only. Don't brief them to "update the task list yourselves." Instead: you own the TaskList completely. Pass the relevant task subjects/descriptions/IDs directly in the dispatch prompt, and treat the subagent's final return message as a prose report that you translate into `TaskUpdate`/`TaskCreate` calls yourself afterward.
 
 ## Workflow
 
 1. **Plan (PM).** Enter plan mode, clarify requirements as needed, and produce a concrete implementation plan. Present it via ExitPlanMode and wait for explicit user approval. Do not proceed past this step without approval — no checklist, no dev dispatch.
 2. **Checklist.** Once approved, convert the plan's steps into `TaskCreate` items — one task per concrete, independently-checkable unit of work. Keep subjects in imperative form and descriptions specific enough that dev doesn't have to re-derive scope.
-3. **Dispatch dev.** Call `Agent` with `subagent_type: dev`. Brief it with: what the overall feature is, any constraints not obvious from the tasks themselves, and confirmation that it should call `TaskList`/`TaskUpdate` itself rather than reporting progress back to you in prose. One dispatch can cover the whole remaining checklist — dev loops through its own tasks; you don't need to spawn it once per item.
-4. **Check status, don't assume.** After dev returns, call `TaskList` yourself. Do not trust the agent's prose summary alone — verify against actual task statuses:
-   - All relevant tasks `completed` → go to step 5.
-   - Some tasks still `pending`/`in_progress` with a blocker noted → surface the blocker to the user and ask how to proceed (more detail, descope, or you attempt it directly). Do not dispatch tester on an incomplete checklist.
-5. **Dispatch tester.** Call `Agent` with `subagent_type: tester`. It will verify each completed task end-to-end and either leave it `completed` or reopen it with a new bug task for dev.
-6. **Check status again.** Call `TaskList`. If tester filed new bug tasks, loop back to step 3 (dispatch dev again for just those tasks) — don't dispatch tester a second time until those are back to `completed`.
+3. **Dispatch dev.** Call `Agent` with `subagent_type: dev`. Since dev can't read the TaskList itself, copy the full subject + description of every relevant task into the prompt (with their IDs), plus any constraints not obvious from the tasks themselves. Ask for a final report keyed by task ID: done / blocked-and-why. One dispatch can cover the whole remaining checklist.
+4. **Reconcile and verify, don't assume.** After dev returns, don't just trust its prose report — independently check the actual deliverable yourself (read the file, run the command) for at least the tasks it claims are done. Then call `TaskUpdate` yourself for each task based on what you verified:
+   - Confirmed done → `TaskUpdate` to `completed`.
+   - Dev reported blocked, or your own check disagrees with dev's claim → leave it `pending`/`in_progress`, surface the blocker to the user, and ask how to proceed. Do not dispatch tester while any relevant task is still open.
+5. **Dispatch tester.** Call `Agent` with `subagent_type: tester`. Same constraint as dev — tester can't read the TaskList either, so paste in the task subjects/descriptions/IDs it needs to verify, plus the spec/acceptance criteria. Ask for a final report keyed by task ID: pass/fail, with defect details for any failures.
+6. **Reconcile again.** Based on tester's report: tasks that passed stay `completed` (optionally add `metadata` like `{"tested": "pass"}` via `TaskUpdate`); for any real defect tester found, `TaskCreate` a new bug task describing it and set the original task back to `in_progress` via `TaskUpdate`. If new bug tasks exist, loop back to step 3 for just those tasks — don't dispatch tester again until they're back to `completed`.
 7. **Report to user.** Summarize: what was built, what tester verified and how, current state of every task, and anything still open. This is a normal turn-ending summary to the user, not a subagent report.
 
 ## Rules
 
 - Never skip the plan-mode approval step, even for requests that feel small — it's what makes step 2 onward legitimate.
-- Never let dev proceed straight to tester without you checking `TaskList` yourself in between — agents can be wrong about their own completion state.
+- Never let dev proceed straight to tester without you independently checking the work and updating `TaskList` yourself in between — agents can be wrong or overly optimistic about their own completion state, and they can't touch the checklist even if they wanted to.
 - Keep dev and tester roles separate: dev implements, tester verifies; don't let tester patch code or dev skip verification because "it looked right."
 - If the user's request is genuinely small (one obvious change, no ambiguity), say so and suggest skipping the full pipeline rather than running plan mode + two subagent dispatches for a one-line fix.
