@@ -13,7 +13,7 @@ There is no separate "PM" agent — plan mode IS the PM role, run by you (the ma
 
 ## Workflow
 
-1. **Plan (PM).** Enter plan mode, clarify requirements as needed, and produce a concrete implementation plan. Present it via ExitPlanMode and wait for explicit user approval. Do not proceed past this step without approval — no checklist, no dev dispatch.
+1. **Plan (PM).** Call `EnterPlanMode` before writing or touching the plan file — don't draft plan content to a file of your own choosing first and only formally enter plan mode after. Clarify requirements as needed, and produce a concrete implementation plan. Present it via ExitPlanMode and wait for explicit user approval. Do not proceed past this step without approval — no checklist, no dev dispatch.
 2. **Checklist.** Once approved, convert the plan's steps into `TaskCreate` items — one task per concrete, independently-checkable unit of work. Keep subjects in imperative form and descriptions specific enough that dev doesn't have to re-derive scope.
 3. **Dispatch dev.** Call `Agent` with `subagent_type: dev`. Since dev can't read the TaskList itself, copy the full subject + description of every relevant task into the prompt (with their IDs), plus any constraints not obvious from the tasks themselves. Ask for a final report keyed by task ID: done / blocked-and-why. One dispatch can cover the whole remaining checklist.
 4. **Reconcile and verify, don't assume.** After dev returns, don't just trust its prose report — independently check the actual deliverable yourself (read the file, run the command) for at least the tasks it claims are done. Then call `TaskUpdate` yourself for each task based on what you verified:
@@ -22,6 +22,15 @@ There is no separate "PM" agent — plan mode IS the PM role, run by you (the ma
 5. **Dispatch tester.** Call `Agent` with `subagent_type: tester`. Same constraint as dev — tester can't read the TaskList either, so paste in the task subjects/descriptions/IDs it needs to verify, plus the spec/acceptance criteria. Ask for a final report keyed by task ID: pass/fail, with defect details for any failures.
 6. **Reconcile again.** Based on tester's report: tasks that passed stay `completed` (optionally add `metadata` like `{"tested": "pass"}` via `TaskUpdate`); for any real defect tester found, `TaskCreate` a new bug task describing it and set the original task back to `in_progress` via `TaskUpdate`. If new bug tasks exist, loop back to step 3 for just those tasks — don't dispatch tester again until they're back to `completed`.
 7. **Report to user.** Summarize: what was built, what tester verified and how, current state of every task, and anything still open. This is a normal turn-ending summary to the user, not a subagent report.
+
+## Mid-pipeline scope changes
+
+If the user sends new requirements while dev or tester is mid-dispatch (or between steps), do not silently fold them into the current checklist or the current dev/tester dispatch. Treat it as an addendum:
+
+1. Let the current dispatch finish and reconcile it normally first, unless the user is explicitly redirecting away from the in-flight work.
+2. Use `AskUserQuestion` to pin down any ambiguous part of the new ask (architecture/library choices, how it should integrate with what's already built) — don't guess on anything that's genuinely a judgment call.
+3. Call `EnterPlanMode` again for the addendum. Reference what's already done (mark it clearly as "already done, not part of this checklist" in the plan) so the plan file stays an accurate, current picture rather than a duplicate of the original.
+4. Once approved, `TaskCreate` new items for just the addendum and continue the normal workflow from step 3. Don't re-litigate or re-verify already-completed tasks unless the new scope actually touches them.
 
 ## Rules
 
